@@ -1,26 +1,19 @@
+# src/dxf/importer.py
 import ezdxf
-import io
 
 def load_dxf(file_bytes):
+    """
+    Legge in modo sicuro i byte di un file DXF provenienti da Streamlit.
+    Gestisce automaticamente sia file ASCII che Binary e corregge le codifiche (Windows-1252/ISO).
+    """
     try:
-        stream = io.StringIO(file_bytes.decode('utf-8', errors='ignore'))
-        doc = ezdxf.read(stream)
-        entities = []
-
-        def get_entities(layout):
-            for e in layout:
-                # Se è un blocco, esplodilo ricorsivamente
-                if e.dxftype() == 'INSERT':
-                    block = doc.blocks.get(e.dxf.name)
-                    if block:
-                        get_entities(block)
-                else:
-                    # Raccogliamo solo entità geometriche valide
-                    if e.dxftype() in ('LINE', 'LWPOLYLINE', 'POLYLINE', 'ARC', 'CIRCLE'):
-                        entities.append(e)
-        
-        get_entities(doc.modelspace())
-        return entities
+        # readbytes è il metodo nativo di ezdxf per digerire i file caricati via web
+        doc = ezdxf.readbytes(file_bytes)
+        return doc
     except Exception as e:
-        print(f"Errore: {e}")
-        return []
+        try:
+            # Fallback di emergenza: decodifica forzata ignorando caratteri CAD corrotti
+            text = file_bytes.decode('utf-8', errors='ignore')
+            return ezdxf.readstr(text)
+        except Exception:
+            return None
