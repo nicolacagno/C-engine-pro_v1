@@ -1,98 +1,79 @@
+import io
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
 import streamlit as st
-import pandas as pd
-import math
-from src.dxf.importer import load_dxf
-from src.dxf.converter import process_dxf_part
 
-def render_nesting_2d(t, config_colonne):
-    col_l2, col_r2 = st.columns(2)
-    with col_l2:
-        st.subheader(t["magazzino_titolo"])
-        st.session_state.magazzino_2d = st.data_editor(st.session_state.magazzino_2d, num_rows="dynamic", column_config=config_colonne, key="edit_mag_2d")
-        
-        st.markdown("---")
-        st.subheader(t["dxf_titolo"])
-        files_dxf = st.file_uploader("Upload .dxf (Multipli)", type=["dxf"], accept_multiple_files=True, key="uploader_dxf_2d")
-        
-        parti_dxf_caricate = {}
-        if files_dxf:
-            for f_dxf in files_dxf:
-                with st.container(border=True):
-                    st.markdown(f"**📄 File: {f_dxf.name}**")
-                    raw_entities = load_dxf(f_dxf.getvalue())
-                    geom = process_dxf_part(raw_entities)
-                    if geom:
-                        minx, miny, maxx, maxy = geom.bounds
-                        w_pezzo = round(maxx - minx, 1)
-                        h_pezzo = round(maxy - miny, 1)
-                        st.success(f"✔️ Ingombro rilevato: {w_pezzo} x {h_pezzo} mm")
-                        qty_spec = st.number_input(f"Quantità per {f_dxf.name}:", min_value=1, value=1, key=f"q_{f_dxf.name}")
-                        parti_dxf_caricate[f_dxf.name] = {"width": w_pezzo, "height": h_pezzo, "qty": qty_spec}
-                    else:
-                        st.error(t["msg_error_dxf"])
+def genera_pdf_report_2d(fig, efficienza, lista_pezzi):
+    """
+    Riceve la figura Matplotlib (fig), la percentuale di efficienza 
+    e la lista dei pezzi posizionati per generare un PDF in memoria.
+    """
+    # 1. Salva il grafico di Matplotlib in memoria come immagine PNG
+    img_buf = io.BytesIO()
+    fig.savefig(img_buf, format='png', bbox_inches='tight', dpi=200)
+    img_buf.seek(0)
 
-    with col_r2:
-        st.subheader(t["richieste_titolo"])
-        st.session_state.richieste_2d = st.data_editor(st.session_state.richieste_2d, num_rows="dynamic", column_config=config_colonne, key="edit_rich_2d")
-        
-        st.markdown("---")
-        soglia_2d = st.number_input("Soglia minima rientro sfrido lamiera (m²):", min_value=0.0, value=0.20, step=0.05)
-        
-        c_btn1, c_btn2 = st.columns(2)
-        with c_btn1:
-            btn_calcola_2d = st.button("🚀 Elabora Ottimizzazione 2D", use_container_width=True)
-        with c_btn2:
-            btn_reset_2d = st.button("🗑️ Reset Calcoli 2D", use_container_width=True)
-            
-        if btn_calcola_2d:
-            if (parti_dxf_caricate or len(st.session_state.richieste_2d) > 0) and len(st.session_state.magazzino_2d) > 0:
-                mat = st.session_state.magazzino_2d.iloc[0]
-                area_lastra = (mat['LARGHEZZA'] * mat['ALTEZZA']) / 1000000.0
-                
-                area_pezzi = 0.0
-                for _, p in parti_dxf_caricate.items():
-                    area_pezzi += ((p['width'] * p['height']) / 1000000.0) * p['qty']
-                for _, r in st.session_state.richieste_2d.iterrows():
-                    area_pezzi += ((r['LARGHEZZA'] * r['ALTEZZA']) / 1000000.0) * r['QTY']
-                    
-                lastre_req = max(1, math.ceil(area_pezzi / (area_lastra * 0.78)))
-                sfrido_singolo = round(((lastre_req * area_lastra) - area_pezzi) / lastre_req, 3)
-                
-                st.session_state.risultati_calcolo_2d = {
-                    "codice": mat['CODICE'], "w": mat['LARGHEZZA'], "h": mat['ALTEZZA'],
-                    "lastre": lastre_req, "sfrido_m2": sfrido_singolo
-                }
-            st.rerun()
-            
-        if btn_reset_2d:
-            st.session_state.risultati_calcolo_2d = None
-            st.rerun()
-            
-        if st.session_state.risultati_calcolo_2d:
-            res = st.session_state.risultati_calcolo_2d
-            st.markdown("### 📊 Risultati Ottimizzazione 2D")
-            df_rep_2d = pd.DataFrame([{
-                "Materiale": res["codice"], "Dimensioni (mm)": f"{res['w']}x{res['h']}",
-                "Lastre Tagliate": res["lastre"], "Sfrido per Lastra (m²)": res["sfrido_m2"]
-            }])
-            st.dataframe(df_rep_2d, use_container_width=True)
-            
-            if st.button("✅ CONFERMA E AGGIORNA MAGAZZINO 2D", type="primary", use_container_width=True):
-                df_mag2d = st.session_state.magazzino_2d.copy()
-                idx_m = df_mag2d[(df_mag2d['CODICE'] == res['codice']) & (df_mag2d['LARGHEZZA'] == res['w'])].index
-                if len(idx_m) > 0:
-                    df_mag2d.loc[idx_m[0], 'QTY'] -= res['lastre']
-                    
-                sfridi_2d_aggiunti = 0
-                if res['sfrido_m2'] >= soglia_2d:
-                    w_sfrido = res['w']
-                    h_sfrido = round((res['sfrido_m2'] * 1000000.0) / w_sfrido, 1)
-                    nuovo_pezzo = pd.DataFrame([{"CODICE": res['codice'], "LARGHEZZA": w_sfrido, "ALTEZZA": h_sfrido, "QTY": res['lastre']}])
-                    df_mag2d = pd.concat([df_mag2d, nuovo_pezzo], ignore_index=True)
-                    sfridi_2d_aggiunti = res['lastre']
-                    
-                df_mag2d = df_mag2d[df_mag2d['QTY'] > 0].reset_index(drop=True)
-                st.session_state.magazzino_2d = df_mag2d
-                st.session_state.risultati_calcolo_2d = None
-                st.success(f"Magazzino 2D aggiornato. Recuperate {sfridi_2d_aggiunti} lamiere residue.")
-                st.rerun()
+    # 2. Crea un buffer in memoria per il documento PDF
+    pdf_buf = io.BytesIO()
+
+    # 3. Configura il documento PDF (A4 con margini di 40 punti)
+    doc = SimpleDocTemplate(pdf_buf, pagesize=A4, leftMargin=40, rightMargin=40, topMargin=40, bottomMargin=40)
+    story = []
+    styles = getSampleStyleSheet()
+
+    # Titolo del Report
+    stile_titolo = styles['Heading1']
+    stile_titolo.textColor = colors.HexColor("#1E3A8A")  # Blu scuro aziendale
+    story.append(Paragraph("Report Ottimizzazione Nesting 2D", stile_titolo))
+    story.append(Spacer(1, 15))
+
+    # Riepilogo dati generali
+    story.append(Paragraph(f"<b>Rendimento Utilizzo Lamiera:</b> {efficienza}%", styles['Normal']))
+    story.append(Spacer(1, 15))
+
+    # Inserimento del Grafico/Mappa di Taglio
+    story.append(Paragraph("<b>Mappa del Layout di Taglio:</b>", styles['Heading2']))
+    story.append(Spacer(1, 8))
+    
+    # La larghezza massima utile su un A4 con questi margini è circa 515 punti
+    immagine_pdf = Image(img_buf, width=480, height=300)
+    story.append(immagine_pdf)
+    story.append(Spacer(1, 20))
+
+    # Tabella dei dettagli dei pezzi posizionati
+    story.append(Paragraph("<b>Dettaglio Pezzi Posizionati nel Piano:</b>", styles['Heading2']))
+    story.append(Spacer(1, 8))
+
+    # Intestazione della tabella
+    dati_tabella = [["ID Pezzo", "Larghezza (mm)", "Altezza (mm)", "Coordinate (X, Y)"]]
+    
+    # Popola la tabella con i tuoi pezzi reali
+    for p in lista_pezzi:
+        dati_tabella.append([
+            str(p.get('id', 'N/D')),
+            str(p.get('w', '-')),
+            str(p.get('h', '-')),
+            f"X: {p.get('x', 0)} , Y: {p.get('y', 0)}"
+        ])
+
+    # Crea la tabella e applica uno stile moderno ed elegante
+    tabella = Table(dati_tabella, colWidths=[90, 110, 110, 150])
+    tabella.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#1E3A8A")), # Sfondo intestazione blu
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),                # Testo intestazione bianco
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor("#F9FAFB")), # Sfondo righe grigio chiaro
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#E5E7EB")),  # Linee di divisione sottili
+        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+    ]))
+    story.append(tabella)
+
+    # Costruisce il PDF inserendo tutti gli elementi
+    doc.build(story)
+    pdf_buf.seek(0)
+    return pdf_buf
