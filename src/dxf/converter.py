@@ -1,56 +1,74 @@
+# src/dxf/converter.py
 import ezdxf
-from shapely.geometry import Polygon
-from shapely import affinity
-import numpy as np
+from shapely.geometry import LineString, Point, Polygon
+from shapely.ops import polygonize, unary_union
 
-def entities_to_shapely(entities):
+def process_dxf_part(doc):
     """
-    Converte una lista di entità DXF in un oggetto Shapely Polygon.
-    Assume che le entità formino un unico contorno chiuso (shell).
+    Scompone il documento DXF ed estrae una geometria Shapely Polygon pulita,
+    riconoscendo automaticamente il perimetro esterno e i fori interni.
     """
-    points = []
-    
-    for e in entities:
-        # Se è una linea, prendi start e end
-        if e.dxftype() == 'LINE':
-            points.append((e.dxf.start.x, e.dxf.start.y))
-            points.append((e.dxf.end.x, e.dxf.end.y))
-            
-        # Se è una polilinea, estrai i punti
-        elif e.dxftype() in ('LWPOLYLINE', 'POLYLINE'):
-            points.extend([(pt[0], pt[1]) for pt in e.get_points(format='xy')])
-            
-        # Se è un arco o cerchio, usiamo flattening per trasformarlo in segmenti
-        elif e.dxftype() in ('ARC', 'CIRCLE', 'ELLIPSE'):
-            # 0.25 è la tolleranza di approssimazione
-            for p in e.flattening(distance=0.25):
-                points.append((p.x, p.y))
-
-    if len(points) < 3:
+    if doc is None:
         return None
-
-    # Crea il poligono Shapely
-    poly = Polygon(points)
     
-    # Se il poligono è invalido (es. auto-intersecante), prova a pulirlo
-    if not poly.is_valid:
-        poly = poly.buffer(0)
-        
-    return poly
+    msp = doc.modelspace()
+    segmenti = []
+    
+    # 1. Estrazione di Polilinee (LWPOLYLINE e POLYLINE) - Tipiche dei profili di taglio
+    for poly in msp.query('LWPOLYLINE POLYLINE'):
+        try:
+            punti = [(p[0], p[1]) for p in poly.points()]
+            if len(punti) >= 2:
+                segmenti.append(LineString(punti))
+        except Exception:
+            pass
+            
+    # 2. Estrazione di Linee singole (LINE)
+    for line in msp.query('LINE'):
+        try:
+            p1 = (line.dxf.start.x, line.dxf.start.y)
+            p2 = (line.dxf.end.x, line.dxf.end.y)
+            segmenti.append(LineString([p1, p2]))
+        except Exception:
+            pass
+            
+    # 3. Estrazione di Cerchi (CIRCLE) - Convertiti in poligoni ad alta precisione
+    for circle in msp.query('CIRCLE'):
+        try:
+            centro = (circle.dxf.center.x, circle.dxf.center.y)
+            raggio = circle.dxf.radius
+            # Approssimazione geometrica fluida del cerchio (64 segmenti)
+            cerchio_shapely = Point(centro).buffer(raggio, quad_segs=16)
+            segmenti.append(LineString(cerchio_shapely.exterior.coords))
+        except Exception:
+            pass
 
-def normalize_polygon(poly):
-    """
-    Trasla il poligono in modo che il suo punto minimo sia (0,0).
-    """
-    if poly is None or poly.is_empty:
-        return poly
+    if not segmenti:
+        return None
         
-    minx, miny, maxx, maxy = poly.bounds
-    return affinity.translate(poly, xoff=-minx, yoff=-miny)
-
-def process_dxf_part(entities):
-    """
-    Funzione orchestratrice: converte ed esplode le entità in un Polygon pulito.
-    """
-    poly = entities_to_shapely(entities)
-    return normalize_polygon(poly)
+    try:
+        # Unisce tutti i segmenti stradali grafici trovati nel CAD
+        linee_unite = unary_union(segmenti)
+        
+        # Genera le aree chiuse (i poligoni effettivi)
+        poligoni_rilevati = list(polygonize(linee_unite))
+        
+        if not poligoni_rilevati:
+            return None
+            
+        # Ordina i poligoni dal più grande al più piccolo (il più grande è la lamiera esterna)
+        poligoni_rilevati.sort(key=lambda p: p.area, reverse=True)
+        profilo_esterno = poligoni_rilevati[0]
+        
+        # Identifica i fori interni: qualsiasi area minore contenuta nel profilo esterno
+        fori = []
+        for p in poligoni_rilevati[1:]:
+            if profilo_esterno.contains(p):
+                fori.append(p.exterior.coords)
+                
+        # Crea il pezzo meccanico finito (pieno esterno e vuoti interni)
+        pezzo_finale = Polygon(profilo_esterno.exterior.coords, fori)
+        return pezzo_finale
+        
+    except Exception:
+        return None
