@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 from shapely.geometry import Polygon
 
 # Importazioni stabili dai moduli interni
@@ -102,7 +101,7 @@ with tab_1d:
         st.success("Ottimizzazione 1D completata.")
 
 # =============================================================================
-# TAB 2D - ORA CON ANTEPRIMA GRAFICA MATPLOTLIB
+# TAB 2D - GESTIONE MULTI-FILE & QUANTITÀ INDIPENDENTI
 # =============================================================================
 with tab_2d:
     col_l2, col_r2 = st.columns([1, 1])
@@ -110,62 +109,79 @@ with tab_2d:
         st.subheader(t["magazzino_titolo"])
         st.session_state.magazzino_2d = st.data_editor(st.session_state.magazzino_2d, num_rows="dynamic", column_config=config_colonne, key="edit_mag_2d")
         
+        st.markdown("---")
         st.subheader(t["dxf_titolo"])
-        file_dxf = st.file_uploader("Upload .dxf", type=["dxf"], key="uploader_dxf_2d")
         
-        w_pezzo, h_pezzo = 200.0, 200.0
-        if file_dxf:
-            raw_entities = load_dxf(file_dxf.getvalue())
-            if raw_entities:
-                geometry = process_dxf_part(raw_entities)
-                if geometry and not geometry.is_empty:
-                    # Calcolo ingombro massimo
-                    minx, miny, maxx, maxy = geometry.bounds
-                    w_pezzo = round(maxx - minx, 1)
-                    h_pezzo = round(maxy - miny, 1)
-                    st.success(f"{t['msg_success_dxf']} {w_pezzo} x {h_pezzo} mm")
+        # AGGIORNATO: accept_multiple_files=True permette il caricamento in blocco
+        files_dxf = st.file_uploader("Upload .dxf (Multipli)", type=["dxf"], accept_multiple_files=True, key="uploader_dxf_2d")
+        
+        # Dizionario di riepilogo per passare i dati al motore di nesting 2D
+        parti_dxf_caricate = {}
+        
+        if files_dxf:
+            st.write(f"### 📦 Pezzi Rilevati ({len(files_dxf)} file):")
+            
+            # Ciclo di lettura per ogni singolo file caricato
+            for f_dxf in files_dxf:
+                # Creiamo un box visivo pulito per ogni pezzo
+                with st.container(border=True):
+                    st.markdown(f"**📄 File: {f_dxf.name}**")
                     
-                    # ---------------------------------------------------------
-                    # SEZIONE GENERAZIONE GRAFICO ANTEPRIMA
-                    # ---------------------------------------------------------
-                    st.write("### 👁️ Preview:")
-                    fig, ax = plt.subplots(figsize=(6, 4))
-                    
-                    # Funzione interna ricorsiva per gestire Polygon o MultiPolygon
-                    def renderizza_sagoma(geom):
-                        if isinstance(geom, Polygon):
-                            # 1. Disegna e colora il profilo esterno (colore arancione MetalHub)
-                            x, y = geom.exterior.xy
-                            ax.plot(x, y, color="#FF5722", linewidth=2, label="Profilo")
-                            ax.fill(x, y, color="#FF5722", alpha=0.15)
+                    raw_entities = load_dxf(f_dxf.getvalue())
+                    if raw_entities:
+                        geometry = process_dxf_part(raw_entities)
+                        if geometry and not geometry.is_empty:
+                            # Calcolo dimensioni ingombro pezzo
+                            minx, miny, maxx, maxy = geometry.bounds
+                            w_pezzo = round(maxx - minx, 1)
+                            h_pezzo = round(maxy - miny, 1)
                             
-                            # 2. Disegna ed evidenzia i fori interni (in azzurro tratteggiato)
-                            for interior in geom.interiors:
-                                xi, yi = interior.xy
-                                ax.plot(xi, yi, color="#00BCD4", linewidth=1.2, linestyle="--")
-                                ax.fill(xi, yi, color="white") # Simula lo svuotamento del foro
-                        elif hasattr(geom, "geoms"):
-                            for sub_geom in geom.geoms:
-                                renderizza_sagoma(sub_geom)
+                            st.success(f"✔️ Dimensioni rilevate: {w_pezzo} x {h_pezzo} mm")
+                            
+                            # Input della quantità specifico per QUESTO file (chiave unica generata col nome del file)
+                            qty_specifica = st.number_input(
+                                f"Quantità da produrre per {f_dxf.name}:", 
+                                min_value=1, 
+                                value=1, 
+                                step=1, 
+                                key=f"qty_{f_dxf.name}"
+                            )
+                            
+                            # Mostra il grafico dell'anteprima 1:1
+                            fig, ax = plt.subplots(figsize=(4, 2.5))
+                            
+                            def renderizza_sagoma(geom):
+                                if isinstance(geom, Polygon):
+                                    x, y = geom.exterior.xy
+                                    ax.plot(x, y, color="#FF5722", linewidth=2)
+                                    ax.fill(x, y, color="#FF5722", alpha=0.15)
+                                    for interior in geom.interiors:
+                                        xi, yi = interior.xy
+                                        ax.plot(xi, yi, color="#00BCD4", linewidth=1.2, linestyle="--")
+                                        ax.fill(xi, yi, color="white")
+                                elif hasattr(geom, "geoms"):
+                                    for sub_geom in geom.geoms:
+                                        renderizza_sagoma(sub_geom)
 
-                    renderizza_sagoma(geometry)
-                    
-                    # Forzatura del rapporto 1:1 per evitare deformazioni visive
-                    ax.set_aspect('equal', adjustable='box')
-                    ax.grid(True, linestyle=':', alpha=0.5)
-                    ax.set_xlabel("X (mm)", fontsize=8)
-                    ax.set_ylabel("Y (mm)", fontsize=8)
-                    
-                    # Invio del grafico a Streamlit
-                    st.pyplot(fig)
-                    plt.close(fig) # Liberazione della memoria
-                    # ---------------------------------------------------------
-                    
-                    qty_dxf = st.number_input(f"{t['col_qty']} DXF", min_value=1, value=5)
-                else:
-                    st.warning(t["msg_error_dxf"])
-            else:
-                st.error(t["msg_critico_dxf"])
+                            renderizza_sagoma(geometry)
+                            ax.set_aspect('equal', adjustable='box')
+                            ax.grid(True, linestyle=':', alpha=0.4)
+                            
+                            st.pyplot(fig)
+                            plt.close(fig)
+                            
+                            # Salva i dati pronti per l'algoritmo di ottimizzazione
+                            parti_dxf_caricate[f_dxf.name] = {
+                                "geometry": geometry,
+                                "width": w_pezzo,
+                                "height": h_pezzo,
+                                "qty": qty_specifica
+                            }
+                        else:
+                            st.warning(t["msg_error_dxf"])
+                    else:
+                        # Se il file specifico fallisce (come il file 1977.002.201.DXF), l'errore rimane isolato qui dentro!
+                        st.error(f"❌ {t['msg_critico_dxf']} Controlla che il file non contenga Spline non convertite o che sia salvato in formato DXF AutoCAD R12/LT2.")
 
     with col_r2:
         st.subheader(t["richieste_titolo"])
@@ -174,4 +190,11 @@ with tab_2d:
         st.markdown("<br><br>", unsafe_allow_html=True)
         if st.button(t["btn_elabora"], key="btn_run_2d"):
             st.info(t["simulazione"])
+            
+            # Log di verifica nel terminale/interfaccia per vedere che le quantità siano corrette
+            if parti_dxf_caricate:
+                st.write("📊 **Riepilogo pezzi DXF inviati al Nesting:**")
+                for nome, dati in parti_dxf_caricate.items():
+                    st.write(f"- Pezzo `{nome}`: dimensioni {dati['width']}x{dati['height']} mm → **Quantità: {dati['qty']}**")
+            
             st.write("Esecuzione del piazzamento geometrico...")
