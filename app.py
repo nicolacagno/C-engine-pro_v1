@@ -23,7 +23,7 @@ if "magazzino_2d" not in st.session_state:
 # =============================================================================
 st.set_page_config(page_title="MetalHub Suite V2", layout="wide")
 
-st.markdown("<h1 style='color:#FF5722;'>🔥 MetalHub Suite V2</h1>", unsafe_keyword=True)
+st.markdown("<h1 style='color:#FF5722;'>🔥 MetalHub Suite V2</h1>", unsafe_allow_html=True)
 tab_1d, tab_2d = st.tabs(["🪚 NESTING 1D", "📐 NESTING 2D"])
 
 # =============================================================================
