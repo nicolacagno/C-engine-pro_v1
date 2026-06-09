@@ -2,8 +2,9 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+from shapely.geometry import Polygon
 
-# Importazione dei moduli dedicati dall'architettura src/
+# Importazioni stabili dai moduli interni
 from src.dxf.importer import load_dxf
 from src.dxf.converter import process_dxf_part
 from src.translation.manager import get_translations
@@ -13,14 +14,13 @@ from src.translation.manager import get_translations
 # =============================================================================
 st.set_page_config(page_title="MetalHub Suite V2", layout="wide")
 
-# Inizializzazione della lingua di default
 if "lingua" not in st.session_state:
     st.session_state.lingua = "Italiano"
 
-# Recupero dinamico delle traduzioni dal modulo esterno
+# Recupero traduzioni
 t = get_translations(st.session_state.lingua)
 
-# Inizializzazione dei magazzini e delle richieste con chiavi interne stabili
+# Inizializzazione dati tabelle con ID stabili
 if "magazzino_1d" not in st.session_state:
     st.session_state.magazzino_1d = pd.DataFrame([
         {"CODICE": "HEA100", "LUNGHEZZA": 6000, "QTY": 12},
@@ -45,7 +45,7 @@ if "richieste_2d" not in st.session_state:
     ])
 
 # =============================================================================
-# SIDEBAR - SELEZIONE LINGUA (SUPPORTA LE 10 LINGUE)
+# SIDEBAR - SELEZIONE LINGUA (10 NAZIONALITÀ)
 # =============================================================================
 with st.sidebar:
     st.header("🌍 Settings")
@@ -55,7 +55,6 @@ with st.sidebar:
         "Polski", "Ελληνικά", "Português", "Čeština", "Magyar"
     ]
     
-    # Mantenimento dell'indice corretto durante il rinfresco della pagina
     idx_corrente = lista_lingue.index(st.session_state.lingua) if st.session_state.lingua in lista_lingue else 0
 
     lingua_scelta = st.selectbox(
@@ -64,20 +63,19 @@ with st.sidebar:
         index=idx_corrente
     )
     
-    # Se la lingua cambia, aggiorna lo stato e rinfresca l'app
     if lingua_scelta != st.session_state.lingua:
         st.session_state.lingua = lingua_scelta
         st.rerun()
 
 # =============================================================================
-# INTERFACCIA PRINCIPALE (HEADER & TABS)
+# INTERFACCIA PRINCIPALE
 # =============================================================================
 st.markdown(f"<h1 style='color:#FF5722;'>{t['titolo']}</h1>", unsafe_allow_html=True)
 st.caption(t["sottotitolo"])
 
 tab_1d, tab_2d = st.tabs([t["tab_1d"], t["tab_2d"]])
 
-# Mappatura dei nomi delle colonne per la traduzione visiva nei data_editor
+# Mappatura etichette colonne visive
 config_colonne = {
     "CODICE": t["col_codice"],
     "LUNGHEZZA": t["col_lunghezza"],
@@ -87,68 +85,82 @@ config_colonne = {
 }
 
 # =============================================================================
-# TAB 1D - NESTING BARRE & PROFILI
+# TAB 1D
 # =============================================================================
 with tab_1d:
     col_l1, col_r1 = st.columns(2)
-    
     with col_l1:
         st.subheader(t["magazzino_titolo"])
-        st.session_state.magazzino_1d = st.data_editor(
-            st.session_state.magazzino_1d, 
-            num_rows="dynamic", 
-            column_config=config_colonne,
-            key="edit_mag_1d"
-        )
-        
+        st.session_state.magazzino_1d = st.data_editor(st.session_state.magazzino_1d, num_rows="dynamic", column_config=config_colonne, key="edit_mag_1d")
     with col_r1:
         st.subheader(t["richieste_titolo"])
-        st.session_state.richieste_1d = st.data_editor(
-            st.session_state.richieste_1d, 
-            num_rows="dynamic", 
-            column_config=config_colonne,
-            key="edit_rich_1d"
-        )
+        st.session_state.richieste_1d = st.data_editor(st.session_state.richieste_1d, num_rows="dynamic", column_config=config_colonne, key="edit_rich_1d")
         
     st.markdown("---")
     if st.button(t["btn_elabora"], key="btn_run_1d"):
         st.info(t["simulazione"])
-        # Qui si innescherà il motore src/nesting/engine_1d.py
         st.success("Ottimizzazione 1D completata.")
 
 # =============================================================================
-# TAB 2D - NESTING LAMIERE & PEZZI DA DXF
+# TAB 2D - ORA CON ANTEPRIMA GRAFICA MATPLOTLIB
 # =============================================================================
 with tab_2d:
     col_l2, col_r2 = st.columns([1, 1])
-    
     with col_l2:
         st.subheader(t["magazzino_titolo"])
-        st.session_state.magazzino_2d = st.data_editor(
-            st.session_state.magazzino_2d, 
-            num_rows="dynamic", 
-            column_config=config_colonne,
-            key="edit_mag_2d"
-        )
+        st.session_state.magazzino_2d = st.data_editor(st.session_state.magazzino_2d, num_rows="dynamic", column_config=config_colonne, key="edit_mag_2d")
         
         st.subheader(t["dxf_titolo"])
         file_dxf = st.file_uploader("Upload .dxf", type=["dxf"], key="uploader_dxf_2d")
         
         w_pezzo, h_pezzo = 200.0, 200.0
-        
         if file_dxf:
-            # Pipeline geometrica V2
             raw_entities = load_dxf(file_dxf.getvalue())
-            
             if raw_entities:
                 geometry = process_dxf_part(raw_entities)
                 if geometry and not geometry.is_empty:
+                    # Calcolo ingombro massimo
                     minx, miny, maxx, maxy = geometry.bounds
                     w_pezzo = round(maxx - minx, 1)
                     h_pezzo = round(maxy - miny, 1)
                     st.success(f"{t['msg_success_dxf']} {w_pezzo} x {h_pezzo} mm")
                     
-                    # Richiesta quantità per il pezzo DXF rilevato
+                    # ---------------------------------------------------------
+                    # SEZIONE GENERAZIONE GRAFICO ANTEPRIMA
+                    # ---------------------------------------------------------
+                    st.write("### 👁️ Preview:")
+                    fig, ax = plt.subplots(figsize=(6, 4))
+                    
+                    # Funzione interna ricorsiva per gestire Polygon o MultiPolygon
+                    def renderizza_sagoma(geom):
+                        if isinstance(geom, Polygon):
+                            # 1. Disegna e colora il profilo esterno (colore arancione MetalHub)
+                            x, y = geom.exterior.xy
+                            ax.plot(x, y, color="#FF5722", linewidth=2, label="Profilo")
+                            ax.fill(x, y, color="#FF5722", alpha=0.15)
+                            
+                            # 2. Disegna ed evidenzia i fori interni (in azzurro tratteggiato)
+                            for interior in geom.interiors:
+                                xi, yi = interior.xy
+                                ax.plot(xi, yi, color="#00BCD4", linewidth=1.2, linestyle="--")
+                                ax.fill(xi, yi, color="white") # Simula lo svuotamento del foro
+                        elif hasattr(geom, "geoms"):
+                            for sub_geom in geom.geoms:
+                                renderizza_sagoma(sub_geom)
+
+                    renderizza_sagoma(geometry)
+                    
+                    # Forzatura del rapporto 1:1 per evitare deformazioni visive
+                    ax.set_aspect('equal', adjustable='box')
+                    ax.grid(True, linestyle=':', alpha=0.5)
+                    ax.set_xlabel("X (mm)", fontsize=8)
+                    ax.set_ylabel("Y (mm)", fontsize=8)
+                    
+                    # Invio del grafico a Streamlit
+                    st.pyplot(fig)
+                    plt.close(fig) # Liberazione della memoria
+                    # ---------------------------------------------------------
+                    
                     qty_dxf = st.number_input(f"{t['col_qty']} DXF", min_value=1, value=5)
                 else:
                     st.warning(t["msg_error_dxf"])
@@ -157,15 +169,9 @@ with tab_2d:
 
     with col_r2:
         st.subheader(t["richieste_titolo"])
-        st.session_state.richieste_2d = st.data_editor(
-            st.session_state.richieste_2d, 
-            num_rows="dynamic", 
-            column_config=config_colonne,
-            key="edit_rich_2d"
-        )
+        st.session_state.richieste_2d = st.data_editor(st.session_state.richieste_2d, num_rows="dynamic", column_config=config_colonne, key="edit_rich_2d")
         
         st.markdown("<br><br>", unsafe_allow_html=True)
         if st.button(t["btn_elabora"], key="btn_run_2d"):
             st.info(t["simulazione"])
-            # Qui si innescherà il motore di nesting 2D basato su Shapely
-            st.write("Esecuzione del piazzamento geometrico bidimensionale...")
+            st.write("Esecuzione del piazzamento geometrico...")
